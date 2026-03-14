@@ -1,168 +1,119 @@
-# 🍔 WhatsApp AI Receptionist
+# WhatsApp AI Receptionist
 
-> A zero-budget AI receptionist for restaurants — takes orders over WhatsApp, notifies the chef and delivery guy via Telegram, and tracks everything on a live dashboard.
+A self-hosted AI receptionist for restaurants. Customers order via WhatsApp, the kitchen gets notified on Telegram, and the delivery guy gets pinged automatically when the order is ready. Built to run at zero cost.
 
 ---
 
-## What it does
+## The idea
 
-- Customers send a WhatsApp message to the restaurant
-- An AI bot replies in French, takes the full order (name, items, delivery/pickup/dine-in, address)
-- Once confirmed, the chef gets a Telegram notification instantly
-- Chef marks the order as ready → delivery guy gets notified automatically with the address
-- Everything is tracked on a live web dashboard with status updates
+Most small restaurants still take orders by phone. It's slow, it's error-prone, and it ties up staff. This project replaces that with a WhatsApp bot that handles the full order flow — from greeting the customer to confirming the order and routing it to the right person.
+
+No cloud bills. No subscriptions. Runs on your own machine.
+
+---
+
+## How it works
+
+A customer messages the restaurant on WhatsApp. The bot asks for their name, takes their order from the menu, asks if it's delivery, pickup or dine-in, and if delivery — gets the address. Once the customer confirms, the order is saved and the chef gets a Telegram notification with a single tap to mark it as ready. When the chef marks it ready, the delivery guy gets notified automatically with the full address. Everything shows up on a local dashboard that auto-refreshes.
+
+---
 
 ## Stack
 
-| Layer | Tech | Cost |
-|---|---|---|
-| AI brain | Groq (Llama 3.3 70B) | Free |
-| Messaging | Twilio WhatsApp Sandbox | Free |
-| Notifications | Telegram Bot API | Free |
-| Backend | Python + Flask | Free |
-| Tunnel | Cloudflare Tunnel | Free |
-| Database | SQLite | Free |
-
-**Total cost: €0**
-
----
-
-## Demo
-
-```
-Customer:  Bonjour je voudrais commander
-Bot:       Bonjour ! Bienvenue chez Chez Yasser 🍔 Puis-je avoir votre nom ?
-Customer:  Ahmed
-Bot:       Bonjour Ahmed ! Que souhaitez-vous commander ?
-Customer:  Un kebab et deux cocas
-Bot:       Super ! C'est pour sur place, à emporter ou en livraison ?
-Customer:  Livraison au 23 rue Thiers
-Bot:       Récapitulatif : 1 Kebab + 2 Coca-Cola → livraison au 23 rue Thiers. Total estimé : 11€. Je confirme ?
-Customer:  Oui
-Bot:       ✅ Commande enregistrée ! Merci et à bientôt 🙏
-```
-
-*Chef receives Telegram notification immediately. Delivery guy notified when order is ready.*
+- **AI** — Groq (Llama 3.3 70B) — free tier
+- **Messaging** — Twilio WhatsApp Sandbox — free tier
+- **Notifications** — Telegram Bot API — free
+- **Backend** — Python + Flask
+- **Tunnel** — Cloudflare Tunnel — free
+- **Database** — SQLite
 
 ---
 
 ## Setup
 
-### Prerequisites
-
-- Python 3.10+
-- A [Groq](https://console.groq.com) account (free)
-- A [Twilio](https://twilio.com) account (free trial)
-- A Telegram account
-- [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) installed
-
-### 1. Clone the repo
+### 1. Clone and install
 
 ```bash
-git clone https://github.com/yourusername/whatsapp-ai-receptionist
+git clone https://github.com/3x-x5/whatsapp-ai-receptionist
 cd whatsapp-ai-receptionist
-```
-
-### 2. Install dependencies
-
-```bash
 pip install flask twilio groq requests python-dotenv
 ```
 
-### 3. Configure environment
-
-Copy the example env file and fill in your credentials:
+### 2. Configure
 
 ```bash
-cp .env.example .env
+cp env.example .env
 ```
+
+Fill in your `.env`:
 
 ```env
 GROQ_API_KEY=your_groq_api_key
 TWILIO_ACCOUNT_SID=your_twilio_sid
 TWILIO_AUTH_TOKEN=your_twilio_token
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-CHEF_CHAT_ID=your_telegram_chat_id
-DELIVERY_CHAT_ID=delivery_guy_telegram_chat_id
+CHEF_CHAT_ID=chef_telegram_chat_id
+DELIVERY_CHAT_ID=delivery_telegram_chat_id
 RESTAURANT_NAME=Your Restaurant Name
 ```
 
-> **How to get each key:**
-> - **Groq**: [console.groq.com](https://console.groq.com) → API Keys → Create
-> - **Twilio**: [twilio.com/console](https://twilio.com/console) → Account SID + Auth Token
-> - **Telegram bot**: message [@BotFather](https://t.me/BotFather) → `/newbot`
-> - **Telegram chat ID**: message [@userinfobot](https://t.me/userinfobot) → `/start`
+Where to get each:
+- **Groq key** → [console.groq.com](https://console.groq.com) → API Keys
+- **Twilio credentials** → [twilio.com/console](https://twilio.com/console)
+- **Telegram bot token** → message @BotFather on Telegram → `/newbot`
+- **Telegram chat ID** → message @userinfobot on Telegram → `/start`
 
-### 4. Join the Twilio WhatsApp Sandbox
+### 3. Join the Twilio WhatsApp sandbox
 
-Go to Twilio Console → Messaging → Try it out → Send a WhatsApp message.
+Twilio Console → Messaging → Try it out → Send a WhatsApp message → follow the join instructions.
 
-Send the join code from your WhatsApp to the sandbox number to activate it.
-
-### 5. Start the tunnel
+### 4. Start the tunnel
 
 ```bash
 cloudflared tunnel --url http://localhost:5000
 ```
 
-Copy the URL (e.g. `https://xyz.trycloudflare.com`).
+Copy the URL it gives you.
 
-### 6. Set the Twilio webhook
+### 5. Set webhooks
 
-Go to Twilio Console → Messaging → Try it out → Send a WhatsApp message → Sandbox Settings.
-
-Set **"When a message comes in"** to:
+In Twilio sandbox settings, set the incoming message webhook to:
 ```
-https://xyz.trycloudflare.com/whatsapp
+https://your-tunnel-url/whatsapp
 ```
 
-### 7. Set the Telegram webhook
-
+For Telegram button callbacks:
 ```bash
-curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://xyz.trycloudflare.com/telegram"
+curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://your-tunnel-url/telegram"
 ```
 
-### 8. Run
+### 6. Run
 
 ```bash
 python3 app.py
 ```
 
-Dashboard available at: `http://localhost:5000/dashboard`
+Dashboard: `http://localhost:5000/dashboard`
 
 ---
 
-## Project structure
+## Conversation reset
 
-```
-.
-├── app.py          # Main Flask app
-├── .env            # Credentials (never commit this)
-├── .env.example    # Template for credentials
-├── .gitignore
-├── orders.db       # SQLite database (auto-created)
-└── README.md
-```
+If a customer wants to start over, they can send: `annuler`, `reset`, `recommencer`, `stop`, or `cancel`.
 
 ---
 
-## Resetting a conversation
+## Where this is going
 
-If a customer gets stuck, they can send any of these to restart:
+This started as a prototype to validate the idea. The goal is to turn it into a proper product that any restaurant can plug into in under 10 minutes.
 
-```
-annuler / reset / recommencer / stop / cancel
-```
+The commercial version will use real phone calls — customers call a number, the AI picks up and talks to them — in addition to WhatsApp. Orders will sync across devices in real time. The dashboard will be a proper web app with analytics: peak hours, most ordered items, average order value. Restaurants will be able to customize their menu, bot personality, and working hours from a simple interface.
 
----
+The AI layer will be upgraded to handle edge cases better — customers who change their mind mid-order, unclear addresses, items that are temporarily unavailable. The bot should feel like a real person took the call, not a form you're filling out over chat.
 
-## Roadmap
+The infrastructure will move from a local machine to a proper hosted backend, with each restaurant getting their own isolated instance. Onboarding will be automated — a restaurant owner fills in a form, connects their WhatsApp number, and the bot is live within minutes.
 
-- [ ] Multi-language support
-- [ ] Voice call support (Twilio Voice + Whisper STT)
-- [ ] Multi-restaurant support
-- [ ] Payment integration
-- [ ] WhatsApp Business API (production)
+The end goal is a system that any small restaurant owner can afford and actually use, without needing a developer on call.
 
 ---
 
