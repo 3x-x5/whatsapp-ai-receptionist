@@ -103,17 +103,21 @@ If a customer wants to start over, they can send: `annuler`, `reset`, `recommenc
 
 ---
 
-## Where this is going
+## Roadmap
 
-This started as a prototype to validate the idea. The goal is to turn it into a proper product that any restaurant can plug into in under 10 minutes.
+The current version is a functional prototype built to validate the core concept. The production version is planned around a more robust and scalable architecture.
 
-The commercial version will use real phone calls — customers call a number, the AI picks up and talks to them — in addition to WhatsApp. Orders will sync across devices in real time. The dashboard will be a proper web app with analytics: peak hours, most ordered items, average order value. Restaurants will be able to customize their menu, bot personality, and working hours from a simple interface.
+**AI layer** — migrate from Groq/Llama to the Claude API (Anthropic) for significantly better instruction-following, context retention across long conversations, and handling of ambiguous or incomplete orders. Claude's tool use feature will be used to structure order extraction more reliably instead of relying on prompt-injected JSON parsing.
 
-The AI layer will be upgraded to handle edge cases better — customers who change their mind mid-order, unclear addresses, items that are temporarily unavailable. The bot should feel like a real person took the call, not a form you're filling out over chat.
+**Voice channel** — integrate Twilio Programmable Voice with a speech-to-text pipeline so customers can call a real phone number and speak their order. The AI processes the transcription in real time and responds via Twilio's TTS engine, making the interaction feel like a natural phone call.
 
-The infrastructure will move from a local machine to a proper hosted backend, with each restaurant getting their own isolated instance. Onboarding will be automated — a restaurant owner fills in a form, connects their WhatsApp number, and the bot is live within minutes.
+**Messaging** — move from the Twilio WhatsApp Sandbox to the official WhatsApp Business API for production use, enabling outbound messages, order status updates sent back to the customer, and multi-agent inbox management.
 
-The end goal is a system that any small restaurant owner can afford and actually use, without needing a developer on call.
+**Backend** — replace Flask + SQLite with a proper stack: PostgreSQL for persistence, Redis for session management, and a background task queue (Celery) for handling notifications asynchronously. The server moves from a local machine to a VPS, with each restaurant getting an isolated deployment.
+
+**Dashboard** — rebuild as a React SPA with real-time order updates over WebSocket, per-restaurant analytics (peak hours, most ordered items, average ticket), and a configuration panel where restaurant owners manage their menu, opening hours, and bot behavior without touching code.
+
+**Onboarding** — fully automated provisioning pipeline: a restaurant fills out a form, connects their WhatsApp Business number, and gets a live bot within minutes. No developer involvement required after initial setup.
 
 ---
 
