@@ -1,9 +1,3 @@
-"""
-AI Receptionist — WhatsApp version (stable prototype)
-Stack: Flask + Groq + Twilio WhatsApp Sandbox + Telegram + SQLite
-Cost: €0
-"""
-
 import json
 import os
 import re
@@ -19,18 +13,16 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
+GROQ_KEY = os.getenv("GROQ_API_KEY")
+TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+WA_NUMBER = "whatsapp:+14155238886"  # sandbox twilio, a changer en prod
 
-GROQ_API_KEY       = os.getenv("GROQ_API_KEY")
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP    = "whatsapp:+14155238886"
+TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHEF_ID = os.getenv("CHEF_CHAT_ID")
+LIVREUR_ID = os.getenv("DELIVERY_CHAT_ID")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHEF_CHAT_ID       = os.getenv("CHEF_CHAT_ID")
-DELIVERY_CHAT_ID   = os.getenv("DELIVERY_CHAT_ID")
-
-RESTAURANT_NAME    = os.getenv("RESTAURANT_NAME", "Mon Restaurant")
+RESTO = os.getenv("RESTAURANT_NAME", "Mon Restaurant")
 
 MENU = """
 - Burger classique : 8€
@@ -44,48 +36,54 @@ MENU = """
 - Eau : 1€
 """
 
-RESET_COMMANDS = ["annuler", "reset", "recommencer", "stop", "cancel"]
-
-# ─── DATABASE ─────────────────────────────────────────────────────────────────
+# mots qui reset la conversation cote client
+RESETS = ["annuler", "reset", "recommencer", "stop", "cancel"]
 
 DB = "orders.db"
+
 
 def init_db():
     con = sqlite3.connect(DB)
     con.execute("""
         CREATE TABLE IF NOT EXISTS orders (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            nom       TEXT,
-            type      TEXT,
-            items     TEXT,
-            adresse   TEXT,
-            temps     TEXT,
-            total     TEXT,
-            status    TEXT DEFAULT 'en attente',
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nom TEXT,
+            type TEXT,
+            items TEXT,
+            adresse TEXT,
+            temps TEXT,
+            total TEXT,
+            status TEXT DEFAULT 'en attente',
             created_at TEXT
         )
     """)
     con.commit()
     con.close()
 
-def save_order(order: dict) -> int:
-    con = sqlite3.connect(DB)
-    cur = con.execute(
-        "INSERT INTO orders (nom, type, items, adresse, temps, total, created_at) VALUES (?,?,?,?,?,?,?)",
-        (
-            order.get("nom"),
-            order.get("type"),
-            ", ".join(order.get("items", [])),
-            order.get("adresse"),
-            order.get("temps"),
-            order.get("total_estime"),
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
+
+def save_order(order):
+    try:
+        con = sqlite3.connect(DB)
+        cur = con.execute(
+            "INSERT INTO orders (nom, type, items, adresse, temps, total, created_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                order.get("nom"),
+                order.get("type"),
+                ", ".join(order.get("items", [])),
+                order.get("adresse"),
+                order.get("temps"),
+                order.get("total_estime"),
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+            )
         )
-    )
-    order_id = cur.lastrowid
-    con.commit()
-    con.close()
-    return order_id
+        oid = cur.lastrowid
+        con.commit()
+        con.close()
+        return oid
+    except Exception as e:
+        print(f"[db] erreur save_order: {e}")
+        return None
+
 
 def get_orders():
     con = sqlite3.connect(DB)
@@ -94,17 +92,17 @@ def get_orders():
     con.close()
     return rows
 
-def update_status(order_id: int, status: str):
+
+def set_status(oid, status):
     con = sqlite3.connect(DB)
-    con.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    con.execute("UPDATE orders SET status=? WHERE id=?", (status, oid))
     con.commit()
     con.close()
 
+
 init_db()
 
-# ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
-
-SYSTEM_PROMPT = f"""Tu es le réceptionniste WhatsApp de {RESTAURANT_NAME}.
+PROMPT = f"""Tu es le réceptionniste WhatsApp de {RESTO}.
 Réponds toujours en français, ton chaleureux et professionnel.
 Tes messages sont courts car c'est WhatsApp.
 
@@ -131,158 +129,171 @@ Quand le client confirme sa commande, ajoute ce bloc JSON à la fin:
 Ne génère le JSON QUE quand le client dit explicitement oui/confirme.
 """
 
-# ─── SESSION STORE ────────────────────────────────────────────────────────────
+# dict pour garder l'historique par numero whatsapp
+# NOTE: si on redémarre le serveur tout est perdu, faudra passer a redis un jour
+convos = {}
 
-sessions = {}
+groq_client = Groq(api_key=GROQ_KEY)
 
-# ─── GROQ ─────────────────────────────────────────────────────────────────────
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+def chat(uid, msg):
+    if uid not in convos:
+        convos[uid] = []
+    convos[uid].append({"role": "user", "content": msg})
 
-def ask_groq(user_id: str, message: str) -> str:
-    if user_id not in sessions:
-        sessions[user_id] = []
-    sessions[user_id].append({"role": "user", "content": message})
-    response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + sessions[user_id],
-        max_tokens=300,
-        temperature=0.5,
-    )
-    reply = response.choices[0].message.content
-    sessions[user_id].append({"role": "assistant", "content": reply})
+    try:
+        res = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": PROMPT}] + convos[uid],
+            max_tokens=300,
+            temperature=0.5,
+        )
+        reply = res.choices[0].message.content
+    except Exception as e:
+        print(f"[groq] erreur: {e}")
+        return "Désolé, une erreur est survenue. Réessayez dans un instant."
+
+    convos[uid].append({"role": "assistant", "content": reply})
     return reply
 
-# ─── ORDER PARSING ────────────────────────────────────────────────────────────
 
-def extract_order(text: str):
-    match = re.search(r"##ORDER##\s*(.*?)\s*##END##", text, re.DOTALL)
-    if not match:
+def parse_order(text):
+    # le modele met le json entre ##ORDER## et ##END##
+    m = re.search(r"##ORDER##\s*(.*?)\s*##END##", text, re.DOTALL)
+    if not m:
         return None
     try:
-        return json.loads(match.group(1))
-    except json.JSONDecodeError:
+        return json.loads(m.group(1))
+    except Exception:
+        print("[parse] json invalide dans la reponse du modele")
         return None
 
-def clean_reply(text: str) -> str:
+
+def strip_json(text):
+    # enleve le bloc order du message avant de l'envoyer au client
     return re.sub(r"##ORDER##.*?##END##", "", text, flags=re.DOTALL).strip()
 
-# ─── TELEGRAM ─────────────────────────────────────────────────────────────────
 
-def send_telegram(chat_id: str, message: str, reply_markup=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    requests.post(url, json=payload)
+def tg_send(cid, txt, btns=None):
+    if not TG_TOKEN or not cid:
+        return
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    body = {"chat_id": cid, "text": txt, "parse_mode": "HTML"}
+    if btns:
+        body["reply_markup"] = btns
+    try:
+        requests.post(url, json=body, timeout=5)
+    except Exception as e:
+        print(f"[telegram] send failed: {e}")
 
-def answer_callback(callback_query_id: str, text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
-    requests.post(url, json={"callback_query_id": callback_query_id, "text": text})
 
-def edit_telegram_message(chat_id: str, message_id: int, text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
-    requests.post(url, json={"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"})
+def tg_ack(cb_id, txt):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/answerCallbackQuery"
+    requests.post(url, json={"callback_query_id": cb_id, "text": txt}, timeout=5)
 
-def notify_order(order: dict, order_id: int):
-    items_str  = "\n".join(f"  • {item}" for item in order["items"])
-    addr_line  = f"\n📍 <b>Adresse:</b> {order['adresse']}" if order.get("adresse") else ""
-    temps_line = f"\n⏰ <b>Heure:</b> {order['temps']}" if order.get("temps") else ""
-    type_emoji = {"livraison": "🛵", "emporter": "🥡", "surplace": "🍽️"}.get(order["type"], "📦")
 
-    msg_chef = (
-        f"🔔 <b>Nouvelle commande #{order_id}</b>\n"
-        f"👤 <b>Client:</b> {order['nom']}\n"
-        f"{type_emoji} <b>Type:</b> {order['type'].upper()}\n"
-        f"🍔 <b>Commande:</b>\n{items_str}\n"
-        f"💶 <b>Total estimé:</b> {order.get('total_estime', '?')}"
-        f"{addr_line}{temps_line}"
+def tg_edit(cid, mid, txt):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/editMessageText"
+    requests.post(url, json={"chat_id": cid, "message_id": mid, "text": txt, "parse_mode": "HTML"}, timeout=5)
+
+
+def ping_chef(order, oid):
+    lignes = "\n".join(f"  - {i}" for i in order["items"])
+    addr = f"\nAdresse: {order['adresse']}" if order.get("adresse") else ""
+    heure = f"\nHeure souhaitee: {order['temps']}" if order.get("temps") else ""
+
+    msg = (
+        f"<b>Commande #{oid}</b>\n"
+        f"Client: {order['nom']}\n"
+        f"Type: {order['type'].upper()}\n"
+        f"Commande:\n{lignes}\n"
+        f"Total: {order.get('total_estime', '?')}"
+        f"{addr}{heure}"
     )
-    # Chef gets a "mark as ready" button
-    chef_markup = {"inline_keyboard": [[
-        {"text": "✅ Marquer comme prêt", "callback_data": f"ready:{order_id}"}
-    ]]}
-    send_telegram(CHEF_CHAT_ID, msg_chef, reply_markup=chef_markup)
+    btns = {"inline_keyboard": [[{"text": "Marquer comme pret", "callback_data": f"ready:{oid}"}]]}
+    tg_send(CHEF_ID, msg, btns)
 
-    # Delivery guy gets notified only when chef marks order as ready
-
-# ─── WHATSAPP WEBHOOK ─────────────────────────────────────────────────────────
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    incoming = request.form.get("Body", "").strip()
-    sender   = request.form.get("From", "")
-
-    # Reset command
-    if incoming.lower() in RESET_COMMANDS:
-        sessions.pop(sender, None)
-        resp = MessagingResponse()
-        resp.message("Conversation réinitialisée. Bonjour, comment puis-je vous aider ?")
-        return str(resp)
-
-    ai_reply = ask_groq(sender, incoming)
-    order    = extract_order(ai_reply)
-    text     = clean_reply(ai_reply)
-
-    if order:
-        order_id = save_order(order)
-        notify_order(order, order_id)
-        sessions.pop(sender, None)
-        text += "\n\n✅ Commande enregistrée ! Merci et à bientôt 🙏"
+    body = request.form.get("Body", "").strip()
+    sender = request.form.get("From", "")
 
     resp = MessagingResponse()
-    resp.message(text)
+
+    if not body:
+        return str(resp)
+
+    if body.lower() in RESETS:
+        convos.pop(sender, None)
+        resp.message("Conversation reinitialisee. Bonjour, comment puis-je vous aider ?")
+        return str(resp)
+
+    reply = chat(sender, body)
+    order = parse_order(reply)
+    txt = strip_json(reply)
+
+    if order:
+        oid = save_order(order)
+        if oid:
+            ping_chef(order, oid)
+            convos.pop(sender, None)
+            txt += "\n\nCommande enregistree, merci !"
+        else:
+            txt += "\n\n(erreur enregistrement, contactez le restaurant directement)"
+
+    resp.message(txt)
     return str(resp)
 
-# ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
 @app.route("/telegram", methods=["POST"])
-def telegram_callback():
-    data = request.get_json()
-    if "callback_query" not in data:
+def tg_webhook():
+    data = request.get_json(silent=True)
+    if not data or "callback_query" not in data:
         return "ok"
 
-    cb         = data["callback_query"]
-    cb_id      = cb["id"]
-    cb_data    = cb["data"]
-    chat_id    = str(cb["message"]["chat"]["id"])
-    message_id = cb["message"]["message_id"]
+    cb = data["callback_query"]
+    cb_id = cb["id"]
+    chat_id = str(cb["message"]["chat"]["id"])
+    mid = cb["message"]["message_id"]
+    orig_txt = cb["message"]["text"]
 
-    action, order_id = cb_data.split(":")
-    order_id = int(order_id)
+    try:
+        action, oid = cb["data"].split(":")
+        oid = int(oid)
+    except ValueError:
+        return "ok"
 
     if action == "delivered":
-        update_status(order_id, "livré")
-        answer_callback(cb_id, "Commande marquée comme livrée ✅")
-        edit_telegram_message(chat_id, message_id,
-            cb["message"]["text"] + "\n\n✅ <b>LIVRÉ</b>")
+        set_status(oid, "livre")
+        tg_ack(cb_id, "Marque comme livre")
+        tg_edit(chat_id, mid, orig_txt + "\n\n<b>LIVRE</b>")
 
     elif action == "ready":
-        update_status(order_id, "prêt")
-        answer_callback(cb_id, "Commande marquée comme prête ✅")
-        edit_telegram_message(chat_id, message_id,
-            cb["message"]["text"] + "\n\n✅ <b>PRÊT</b>")
+        set_status(oid, "pret")
+        tg_ack(cb_id, "Marque comme pret")
+        tg_edit(chat_id, mid, orig_txt + "\n\n<b>PRET</b>")
 
-        # Now notify delivery guy if it's a delivery order
-        if DELIVERY_CHAT_ID and DELIVERY_CHAT_ID != CHEF_CHAT_ID:
-            con = sqlite3.connect(DB)
-            con.row_factory = sqlite3.Row
-            order = con.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-            con.close()
-            if order and order["type"] == "livraison":
-                msg_delivery = (
-                    f"🛵 <b>Livraison #{order_id} — PRÊTE</b>\n"
-                    f"👤 <b>Client:</b> {order['nom']}\n"
-                    f"📍 <b>Adresse:</b> {order['adresse']}\n"
-                    f"🍔 <b>Commande:</b> {order['items']}"
-                )
-                delivery_markup = {"inline_keyboard": [[
-                    {"text": "✅ Marquer comme livré", "callback_data": f"delivered:{order_id}"}
-                ]]}
-                send_telegram(DELIVERY_CHAT_ID, msg_delivery, reply_markup=delivery_markup)
+        # prevenir le livreur seulement si c'est une livraison
+        if LIVREUR_ID and LIVREUR_ID != CHEF_ID:
+            try:
+                con = sqlite3.connect(DB)
+                con.row_factory = sqlite3.Row
+                o = con.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+                con.close()
+                if o and o["type"] == "livraison":
+                    msg = (
+                        f"<b>Livraison #{oid} prete</b>\n"
+                        f"Client: {o['nom']}\n"
+                        f"Adresse: {o['adresse']}\n"
+                        f"Commande: {o['items']}"
+                    )
+                    btns = {"inline_keyboard": [[{"text": "Marquer comme livre", "callback_data": f"delivered:{oid}"}]]}
+                    tg_send(LIVREUR_ID, msg, btns)
+            except Exception as e:
+                print(f"[tg_webhook] erreur notif livreur: {e}")
 
     return "ok"
-
 
 
 @app.route("/dashboard")
@@ -295,15 +306,15 @@ def dashboard():
             <td>{o['nom']}</td>
             <td>{o['type']}</td>
             <td>{o['items']}</td>
-            <td>{o['adresse'] or '—'}</td>
-            <td>{o['temps'] or '—'}</td>
+            <td>{o['adresse'] or '-'}</td>
+            <td>{o['temps'] or '-'}</td>
             <td>{o['total'] or '?'}</td>
             <td>
-              <select onchange="updateStatus({o['id']}, this.value)">
+              <select onchange="maj({o['id']}, this.value)">
                 <option {'selected' if o['status']=='en attente' else ''}>en attente</option>
-                <option {'selected' if o['status']=='en préparation' else ''}>en préparation</option>
-                <option {'selected' if o['status']=='prêt' else ''}>prêt</option>
-                <option {'selected' if o['status']=='livré' else ''}>livré</option>
+                <option {'selected' if o['status']=='en preparation' else ''}>en preparation</option>
+                <option {'selected' if o['status']=='pret' else ''}>pret</option>
+                <option {'selected' if o['status']=='livre' else ''}>livre</option>
               </select>
             </td>
           </tr>"""
@@ -312,7 +323,7 @@ def dashboard():
 
     return f"""<!DOCTYPE html><html><head><meta charset='utf-8'>
 <meta http-equiv="refresh" content="15">
-<title>{RESTAURANT_NAME} — Commandes</title>
+<title>{RESTO}</title>
 <style>
   body{{font-family:sans-serif;padding:2rem;background:#f9f9f9;font-size:14px}}
   h1{{margin-bottom:1rem}}
@@ -321,32 +332,28 @@ def dashboard():
   td{{padding:10px 14px;border-bottom:1px solid #eee}}
   select{{padding:4px 8px;border-radius:4px;border:1px solid #ddd;font-size:13px}}
 </style></head><body>
-<h1>🍔 {RESTAURANT_NAME} — Commandes</h1>
+<h1>{RESTO} — commandes</h1>
 <table><thead><tr>
   <th>#</th><th>Heure</th><th>Client</th><th>Type</th>
-  <th>Commande</th><th>Adresse</th><th>Arrivée</th><th>Total</th><th>Statut</th>
+  <th>Commande</th><th>Adresse</th><th>Arrivee</th><th>Total</th><th>Statut</th>
 </tr></thead><tbody>{rows}</tbody></table>
 <script>
-function updateStatus(id, status) {{
+function maj(id, status) {{
   fetch('/status/' + id + '/' + encodeURIComponent(status));
 }}
 </script>
 </body></html>"""
 
-@app.route("/status/<int:order_id>/<status>")
-def set_status(order_id, status):
-    update_status(order_id, status)
+
+@app.route("/status/<int:oid>/<status>")
+def update_status_route(oid, status):
+    set_status(oid, status)
     return "ok"
 
-# ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print(f"  {RESTAURANT_NAME} — Réceptionniste WhatsApp")
-    print("=" * 50)
-    print("  1. Run ngrok:      ngrok http 5000")
-    print("  2. Twilio webhook: https://<ngrok-url>/whatsapp")
-    print("  3. Dashboard:      http://localhost:5000/dashboard")
-    print("  Reset command:     customer sends 'annuler'")
-    print("=" * 50)
+    print(f"{RESTO} — lancement...")
+    print("1. ngrok http 5000")
+    print("2. coller l'url dans twilio webhook -> /whatsapp")
+    print("3. dashboard: http://localhost:5000/dashboard")
     app.run(debug=True, port=5000)
