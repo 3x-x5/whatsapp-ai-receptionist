@@ -1,4 +1,3 @@
-![License: MIT + Commons Clause](https://img.shields.io/badge/license-MIT%20+%20Commons%20Clause-green)
 # WhatsApp AI Receptionist
 
 A self-hosted AI receptionist for restaurants. Customers order via WhatsApp, the kitchen gets notified on Telegram, and the delivery guy gets pinged automatically when the order is ready. Built to run at zero cost.
