@@ -119,8 +119,3 @@ The current version is a functional prototype built to validate the core concept
 
 **Onboarding** — fully automated provisioning pipeline: a restaurant fills out a form, connects their WhatsApp Business number, and gets a live bot within minutes. No developer involvement required after initial setup.
 
----
-
-## License
-
-MIT
