@@ -1,3 +1,4 @@
+![License: MIT + Commons Clause](https://img.shields.io/badge/license-MIT%20+%20Commons%20Clause-green)
 # WhatsApp AI Receptionist
 
 A self-hosted AI receptionist for restaurants. Customers order via WhatsApp, the kitchen gets notified on Telegram, and the delivery guy gets pinged automatically when the order is ready. Built to run at zero cost.
@@ -119,3 +120,11 @@ The current version is a functional prototype built to validate the core concept
 
 **Onboarding** — fully automated provisioning pipeline: a restaurant fills out a form, connects their WhatsApp Business number, and gets a live bot within minutes. No developer involvement required after initial setup.
 
+## License
+
+This project is licensed under MIT + Commons Clause.
+
+You are free to use, modify, and distribute this code for personal and non-commercial purposes.
+Commercial use — including reselling it as a hosted service — requires explicit permission from the author.
+
+Contact: yasserbenattouch@gmail.com
